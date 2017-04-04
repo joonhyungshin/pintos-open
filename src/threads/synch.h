@@ -18,7 +18,7 @@ void sema_up (struct semaphore *);
 void sema_self_test (void);
 
 /* Lock. */
-#define DONATE_DEPTH 8
+#define DONATE_DEPTH_MAX 8
 
 struct lock 
   {
