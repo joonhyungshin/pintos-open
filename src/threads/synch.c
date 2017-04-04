@@ -109,14 +109,27 @@ void
 sema_up (struct semaphore *sema) 
 {
   enum intr_level old_level;
+  struct thread *t = NULL;
 
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
-  if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+  if (!list_empty (&sema->waiters))
+  {
+    /* The compare function is reversed, so we should pick the minimum. */
+    t = list_entry (list_min (&sema->waiters, pri_greater_func, NULL),
+                    struct thread, elem);
+    list_remove (&t->elem);
+    thread_unblock (t);
+  }
   sema->value++;
+  if (t != NULL && thread_get_priority () < t->priority)
+    {
+      if (intr_context ())
+        intr_yield_on_return ();
+      else
+        thread_yield ();
+    }
   intr_set_level (old_level);
 }
 
@@ -178,8 +191,12 @@ lock_init (struct lock *lock)
   ASSERT (lock != NULL);
 
   lock->holder = NULL;
+  lock->donate = PRI_MIN;
   sema_init (&lock->semaphore, 1);
 }
+
+/* Priority donations. */
+static void priority_donate (struct lock *lock, int depth);
 
 /* Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
@@ -196,8 +213,29 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
-  sema_down (&lock->semaphore);
-  lock->holder = thread_current ();
+  struct thread *cur = thread_current ();
+  enum intr_level old_level = intr_disable ();
+  if (!thread_mlfqs && lock->holder != NULL)
+    {
+      cur->hold = lock;
+      if (cur->priority > lock->donate)
+        {
+          lock->donate = cur->priority;
+          if (lock->donate > lock->holder->priority)
+            priority_donate (lock, 1);
+        }
+      sema_down (&lock->semaphore);
+      cur->hold = NULL;
+      /* Update the donated priority of the lock. */
+      lock->donate = list_entry (list_min (&lock->semaphore.waiters,
+                                           pri_greater_func, NULL),
+                                 struct thread, elem)->priority;
+    }
+  else
+    sema_down (&lock->semaphore);
+  list_push_back (&cur->lock_list, &lock->elem);
+  lock->holder = cur;
+  intr_set_level (old_level);
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -231,8 +269,13 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
+  enum intr_level old_level = intr_disable ();
   lock->holder = NULL;
+  list_remove (&lock->elem);
+  if (!thread_mlfqs)
+    thread_update_priority ();
   sema_up (&lock->semaphore);
+  intr_set_level (old_level);
 }
 
 /* Returns true if the current thread holds LOCK, false
@@ -244,6 +287,35 @@ lock_held_by_current_thread (const struct lock *lock)
   ASSERT (lock != NULL);
 
   return lock->holder == thread_current ();
+}
+
+/* Donate the priority. This function calls itself recursively,
+   with depth at most 8. */
+static void
+priority_donate (struct lock *lock, int depth)
+{
+  ASSERT (lock != NULL);
+  
+  struct thread *t = lock->holder;
+  struct thread *cur = thread_current ();
+  if (t != NULL && cur->priority > t->priority)
+    {
+      t->priority = cur->priority;
+      /* In practice, the priority of a thread in the ready
+         queue is unlikely changed, so it is more efficient to
+         reorder each time. */
+      if (t->status == THREAD_READY)
+        {
+          struct list_elem *e;
+          for (e = list_next (&t->elem); e->next != NULL; e = list_next (e))
+            if (!pri_greater_func (e, &t->elem, NULL))
+              break;
+          list_remove (&t->elem);
+          list_insert (e, &t->elem);
+        }
+      if (t->hold != NULL && depth < DONATE_DEPTH)
+        priority_donate (t->hold, depth + 1);
+    }
 }
 
 /* One semaphore in a list. */

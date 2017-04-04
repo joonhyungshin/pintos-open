@@ -18,10 +18,14 @@ void sema_up (struct semaphore *);
 void sema_self_test (void);
 
 /* Lock. */
+#define DONATE_DEPTH 8
+
 struct lock 
   {
     struct thread *holder;      /* Thread holding lock (for debugging). */
     struct semaphore semaphore; /* Binary semaphore controlling access. */
+    int donate;                 /* Donated priority. */
+    struct list_elem elem;     /* For lock_list. */
   };
 
 void lock_init (struct lock *);

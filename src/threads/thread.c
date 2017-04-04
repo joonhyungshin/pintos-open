@@ -208,6 +208,8 @@ thread_create (const char *name, int priority,
 
   /* Add to run queue. */
   thread_unblock (t);
+  if (thread_get_priority () < t->priority)
+    thread_yield ();
 
   return tid;
 }
@@ -245,7 +247,7 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  list_insert_ordered (&ready_list, &t->elem, pri_greater_func, NULL);
   t->status = THREAD_READY;
   intr_set_level (old_level);
 }
@@ -315,8 +317,8 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
-  if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+  if (cur != idle_thread)
+    list_insert_ordered (&ready_list, &cur->elem, pri_greater_func, NULL);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -339,11 +341,57 @@ thread_foreach (thread_action_func *func, void *aux)
     }
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
+/* Sets the current thread's priority to NEW_PRIORITY. This
+   does not work with mlfqs scheduling. */
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
+  if (!thread_mlfqs)
+    {
+      struct thread *cur = thread_current ();
+      enum intr_level old_level = intr_disable ();
+      if (cur->priority == cur->ori_pri)
+        {
+          cur->ori_pri = new_priority;
+          thread_update_priority ();
+        }
+      else
+        {
+          cur->ori_pri = new_priority;
+          if (cur->priority < new_priority)
+            cur->priority = new_priority;
+        }
+      if (!list_empty (&ready_list)
+          && list_entry (list_front (&ready_list),
+                         struct thread, elem)->priority > cur->priority)
+        {
+          if (intr_context ())
+            intr_yield_on_return ();
+          else
+            thread_yield ();
+        }
+      intr_set_level (old_level);
+    }
+}
+
+/* Update the current priority. This function should be called
+   with interrupt turned off. */
+void
+thread_update_priority (void)
+{
+  ASSERT (!thread_mlfqs);
+  ASSERT (intr_get_level () == INTR_OFF);
+
+  struct thread *cur = thread_current ();
+  int max_pri = cur->ori_pri;
+  struct list_elem *e;
+  for (e = list_begin (&cur->lock_list); e != list_end (&cur->lock_list);
+       e = list_next (e))
+    {
+      int pri = list_entry (e, struct lock, elem)->donate;
+      max_pri = max_pri > pri ? max_pri : pri;
+    }
+  cur->priority = max_pri;
 }
 
 /* Returns the current thread's priority. */
@@ -468,7 +516,10 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+  t->ori_pri = priority;
   t->magic = THREAD_MAGIC;
+  t->hold = NULL;
+  list_init (&t->lock_list);
   list_push_back (&all_list, &t->allelem);
 }
 
@@ -580,6 +631,17 @@ allocate_tid (void)
   lock_release (&tid_lock);
 
   return tid;
+}
+
+/* Makes the thread with the greatest priority be in the
+   front of th list. */
+bool
+pri_greater_func (const struct list_elem *a,
+               const struct list_elem *b,
+               void *aux UNUSED)
+{
+  return list_entry (a, struct thread, elem)->priority
+         > list_entry (b, struct thread, elem)->priority;
 }
 
 /* Offset of `stack' member within `struct thread'.

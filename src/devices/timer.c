@@ -30,11 +30,15 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 
+/* Sleeping list of thread. */
+static struct list sleep_list;
+
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
 void
 timer_init (void) 
 {
+  list_init (&sleep_list);
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
 }
@@ -84,16 +88,32 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+/* Alarm less function. */
+static bool
+alarm_less_func (const struct list_elem *a,
+                 const struct list_elem *b,
+                 void *aux UNUSED)
+{
+  return list_entry (a, struct thread, elem)->alarm
+         < list_entry (b, struct thread, elem)->alarm;
+}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
 timer_sleep (int64_t ticks) 
 {
+  if (ticks <= 0)
+    return;
+  
   int64_t start = timer_ticks ();
+  struct thread *cur = thread_current ();
 
-  ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+  enum intr_level old_level = intr_disable ();
+  cur->alarm = start + ticks;
+  list_insert_ordered (&sleep_list, &cur->elem, alarm_less_func, NULL);
+  thread_block ();
+  intr_set_level (old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -170,8 +190,25 @@ timer_print_stats (void)
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
+  /* If unblocked thread has priority greater than us, yield the
+     CPU. */
+  int max_pri = PRI_MIN;
+
   ticks++;
+  /* Wakes up the sleeping thread. */
+  while (!list_empty (&sleep_list))
+    {
+      struct thread *t = list_entry (list_front (&sleep_list),
+                                     struct thread, elem);
+      if (t->alarm > ticks)
+        break;
+      list_remove (&t->elem);
+      thread_unblock (t);
+      max_pri = max_pri > t->priority ? max_pri : t->priority;
+    }
   thread_tick ();
+  if (max_pri > thread_get_priority ())
+    intr_yield_on_return ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
