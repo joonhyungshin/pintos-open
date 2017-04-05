@@ -157,9 +157,7 @@ int thread_get_load_avg (void);
 bool pri_greater_func (const struct list_elem *, const struct list_elem *, void *);
 
 /* For advanced scheduler. */
-extern fixed_point_t load_avg;
-
-void thread_update_priority (void);
+int thread_update_priority (void);
 void thread_feedback (void);
 
 #endif /* threads/thread.h */

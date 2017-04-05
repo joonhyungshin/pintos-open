@@ -196,15 +196,17 @@ timer_interrupt (struct intr_frame *args UNUSED)
 
   ticks++;
   thread_tick ();
+
   /* Feedback the scheduler. */
   if (thread_mlfqs)
     {
-      if (ticks % 4 == 0)
-        thread_update_priority ();
       if (ticks % TIMER_FREQ == 0)
         thread_feedback ();
+      if (ticks % 4 == 0)
+        max_pri = thread_update_priority ();
     }
-  /* Wakes up the sleeping thread. */
+
+  /* Wakes up sleeping threads. */
   while (!list_empty (&sleep_list))
     {
       struct thread *t = list_entry (list_front (&sleep_list),
@@ -213,7 +215,8 @@ timer_interrupt (struct intr_frame *args UNUSED)
         break;
       list_remove (&t->elem);
       thread_unblock (t);
-      max_pri = max_pri > t->priority ? max_pri : t->priority;
+      if (max_pri < t->priority)
+        max_pri = t->priority;
     }
   if (max_pri > thread_get_priority ())
     intr_yield_on_return ();
