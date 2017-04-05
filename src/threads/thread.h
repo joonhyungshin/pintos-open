@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/fixed-point.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -23,6 +24,11 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+
+/* Thread niceness. */
+#define NICE_MIN (-20)
+#define NICE_DEFAULT 0
+#define NICE_MAX 20
 
 /* A kernel thread or user process.
 
@@ -97,6 +103,10 @@ struct thread
     /* Shared between thread.c and synch.c, and devices/timer.c. */
     struct list_elem elem;              /* List element. */
 
+    /* For advanced scheduler. */
+    int nice;
+    fixed_point_t recent_cpu;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -136,7 +146,7 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
-void thread_update_priority (void);
+void thread_find_priority (void);
 
 int thread_get_nice (void);
 void thread_set_nice (int);
@@ -145,5 +155,11 @@ int thread_get_load_avg (void);
 
 /* Shared between thread.c and synch.c. */
 bool pri_greater_func (const struct list_elem *, const struct list_elem *, void *);
+
+/* For advanced scheduler. */
+extern fixed_point_t load_avg;
+
+void thread_update_priority (void);
+void thread_feedback (void);
 
 #endif /* threads/thread.h */

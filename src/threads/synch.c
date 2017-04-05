@@ -254,7 +254,11 @@ lock_try_acquire (struct lock *lock)
 
   success = sema_try_down (&lock->semaphore);
   if (success)
-    lock->holder = thread_current ();
+    {
+      struct thread *cur = thread_current ();
+      list_push_back (&cur->lock_list, &lock->elem);
+      lock->holder = cur;
+    }
   return success;
 }
 
@@ -273,7 +277,7 @@ lock_release (struct lock *lock)
   lock->holder = NULL;
   list_remove (&lock->elem);
   if (!thread_mlfqs)
-    thread_update_priority ();
+    thread_find_priority ();
   sema_up (&lock->semaphore);
   intr_set_level (old_level);
 }
@@ -294,6 +298,7 @@ lock_held_by_current_thread (const struct lock *lock)
 static void
 priority_donate (struct lock *lock, int depth)
 {
+  ASSERT (!thread_mlfqs);
   ASSERT (lock != NULL);
 
   struct thread *t = lock->holder;

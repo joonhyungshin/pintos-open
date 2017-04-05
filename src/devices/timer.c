@@ -195,6 +195,15 @@ timer_interrupt (struct intr_frame *args UNUSED)
   int max_pri = PRI_MIN;
 
   ticks++;
+  thread_tick ();
+  /* Feedback the scheduler. */
+  if (thread_mlfqs)
+    {
+      if (ticks % 4 == 0)
+        thread_update_priority ();
+      if (ticks % TIMER_FREQ == 0)
+        thread_feedback ();
+    }
   /* Wakes up the sleeping thread. */
   while (!list_empty (&sleep_list))
     {
@@ -206,7 +215,6 @@ timer_interrupt (struct intr_frame *args UNUSED)
       thread_unblock (t);
       max_pri = max_pri > t->priority ? max_pri : t->priority;
     }
-  thread_tick ();
   if (max_pri > thread_get_priority ())
     intr_yield_on_return ();
 }
